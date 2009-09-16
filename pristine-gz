@@ -1,0 +1,528 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+pristine-gz - regenerate pristine gz files
+
+=head1 SYNOPSIS
+
+B<pristine-gz> [-vdk] gengz delta file
+
+B<pristine-gz> [-vdk] gendelta file.gz delta
+
+B<pristine-gz> [-vdk] gendelta2 file file.gz file.gz-hash file.gz-size delta
+
+=head1 DESCRIPTION
+
+This is a complement to the pristine-tar(1) command. Normally you don't
+need to run it by hand, since pristine-tar calls it as necessary to handle
+.tar.gz files.
+
+pristine-gz gendelta takes the specified gz file, and generates a
+small binary delta file that can later be used by pristine-gz gengz
+to recreate the original file.
+
+pristine-gz gengz takes the specified delta file, and compresses
+the specified input file (which must be identical to the contents
+of the original gz file). The resulting gz file will be identical to the
+original gz file.
+
+The approach used to regenerate the original gz file is to figure out how
+it was produced -- what compression level was used, whether it was built
+with GNU gzip(1) or with a library or BSD version, whether the --rsyncable
+option was used, etc, and to reproduce this build environment when
+regenerating the gz.
+
+This approach will work for about 99.5% of cases. One example of a case it
+cannot currently support is a gz file that has been produced by appending
+together multiple gz files.
+
+For the few where it doesn't work, a binary diff will be included in the
+delta between the closest regneratable gz file and the original. In
+the worst case, the diff will include the entire content of the original
+gz file, resulting in a larger than usual delta. If the delta is much
+larger than usual, pristine-gz will print a warning.
+
+If the delta filename is "-", pristine-gz reads or writes it to stdio.
+
+=head1 OPTIONS
+
+=over 4
+
+=item -v
+
+=item --verbose
+
+Verbose mode, show each command that is run.
+
+=item -d
+
+=item --debug
+
+Debug mode.
+
+=item -k
+
+=item --keep
+
+Don't clean up the temporary directory on exit.
+
+=back
+
+=head1 AUTHOR
+
+Joey Hess <joeyh@debian.org>,
+Faidon Liambotis <paravoid@debian.org>
+Josh Triplett <josh@joshtriplett.org>
+
+Licensed under the GPL, version 2.
+
+=cut
+
+use warnings;
+use strict;
+use File::Temp;
+use Getopt::Long;
+use File::Basename qw/basename/;
+use IPC::Open2;
+
+use constant GZIP_DEBUG		 => 1;
+
+# magic identification
+use constant GZIP_ID1		 => 0x1F;
+use constant GZIP_ID2		 => 0x8B;
+
+# compression methods, 0x00-0x07 are reserved
+use constant GZIP_METHOD_DEFLATE => 0x08;
+
+# flags
+use constant {
+	GZIP_FLAG_FTEXT		 => 0,
+	GZIP_FLAG_FHCRC		 => 1,
+	GZIP_FLAG_FEXTRA	 => 2,
+	GZIP_FLAG_FNAME		 => 3,
+	GZIP_FLAG_FCOMMENT	 => 4,
+	# the rest are reserved
+};
+# compression level
+use constant {
+	GZIP_COMPRESSION_NORMAL	 => 0,
+	GZIP_COMPRESSION_BEST	 => 2,
+	GZIP_COMPRESSION_FAST	 => 4,
+};
+# operating systems
+use constant {
+	GZIP_OS_MSDOS		 => 0,
+	GZIP_OS_AMIGA		 => 1,
+	GZIP_OS_VMS		 => 2,
+	GZIP_OS_UNIX		 => 3,
+	GZIP_OS_VMCMS		 => 4,
+	GZIP_OS_ATARI		 => 5,
+	GZIP_OS_HPFS		 => 6,
+	GZIP_OS_MACINTOSH	 => 7,
+	GZIP_OS_ZSYSTEM		 => 8,
+	GZIP_OS_CPM		 => 9,
+	GZIP_OS_TOPS		 => 10,
+	GZIP_OS_NTFS		 => 11,
+	GZIP_OS_QDOS		 => 12,
+	GZIP_OS_RISCOS		 => 13,
+	GZIP_OS_UNKNOWN		 => 255,
+};
+
+my $verbose=0;
+my $debug=0;
+my $keep=0;
+
+sub usage {
+	print STDERR "Usage: pristine-gz [-vdk] gengz delta file\n";
+	print STDERR "       pristine-gz [-vdk] gendelta file.gz delta\n";
+	print STDERR "       pristine-gz [-vdk] gendelta2 file file.gz gzhash gzsize delta\n";
+}
+
+sub debug {
+	print STDERR "debug: @_\n" if $debug;
+}
+
+sub vprint {
+	print STDERR "pristine-gz: @_\n" if $verbose;
+}
+
+sub doit {
+	vprint(@_);
+	if (system(@_) != 0) {
+		die "command failed: @_\n";
+	}
+}
+
+sub doit_redir {
+	no warnings 'once';
+	my ($in, $out, @args) = @_;
+	vprint(@args, "<", $in, ">", $out);
+	open INFILE, "<", $in or die("Could not open '$in' for reading: $!\n");
+	open OUTFILE, ">", $out or die("Could not open '$out' for reading: $!\n");
+	my $pid = open2(">&OUTFILE", "<&INFILE", @args);
+	waitpid $pid, 0;
+}
+
+sub tempdir {
+	return File::Temp::tempdir("pristine-gz.XXXXXXXXXX",
+		TMPDIR => 1, CLEANUP => !$keep);
+}
+
+sub readgzip {
+	my $filename = shift;
+	my $chars;
+
+	open(GZIP, "< $filename")
+		or die("Could not open '$filename' for reading: $!\n");
+
+	if (read(GZIP, $chars, 10) != 10) {
+		die("Unable to read from input\n");
+	}
+
+	my ($id1, $id2, $method, $flags, $timestamp, $level, $os, $name)
+		= (unpack("CCCb8VCC", $chars), '');
+
+	if ($id1 != GZIP_ID1 || $id2 != GZIP_ID2 || $method != GZIP_METHOD_DEFLATE) {
+		die("This is not a valid GZip archive.\n");
+	}
+	my @flags = split(//, $flags);
+	
+	if ($flags[GZIP_FLAG_FNAME]) {
+		# read a null-terminated string
+		$name .= $chars
+			while (read(GZIP, $chars, 1) == 1 && ord($chars) != 0);
+	}
+	close(GZIP);
+
+	return (\@flags, $timestamp, $level, $os, $name);
+}
+
+sub predictgzipargs {
+	my ($flags, $timestamp, $level) = @_;
+	my @flags = @$flags;
+
+	my @args;
+	unless ($flags[GZIP_FLAG_FNAME]) {
+		push @args, '-n';
+		push @args, '-M' if $timestamp;
+	}
+
+	if ($level == GZIP_COMPRESSION_BEST) {
+		push @args, '-9'
+	} elsif ($level == GZIP_COMPRESSION_FAST) {
+		push @args, '-1'
+	}
+
+	return @args;
+}
+
+sub comparefiles {
+	my ($old, $new) = (shift, shift);
+	system('cmp', '-s', $old, $new);
+
+	if ($? == -1 || $? & 127) {
+		die("Failed to execute cmp: $!\n");
+	}
+
+	return $? >> 8;
+}
+
+sub comparehash {
+	my ($hash, $new) = (shift, shift);
+	my $newhash = `md5sum "$new"`;
+	chomp($newhash);
+	$newhash =~ s/ .*//;
+	print STDERR "Comparing >$hash< with >$newhash<.\n";
+	if ($newhash eq $hash) {
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
+sub reproducegz {
+	my ($orig, $tempdir, $tempin, $orighash, $origsize) = @_;
+	my $tempout="$tempdir/test.gz";
+	
+	$origsize=(stat($orig))[7] if !defined $origsize;
+
+	# read fields from gzip headers
+	my ($flags, $timestamp, $level, $os, $name) = readgzip($orig);
+	debug("flags: [".join(", ", @$flags).
+		"] timestamp: $timestamp level: $level os: $os name: $name");
+
+	# try to guess the gzip arguments that are needed by the header
+	# information
+	my @args = predictgzipargs($flags, $timestamp, $level);
+	my @extraargs = ("-F", $name, "-T", $timestamp);
+
+	my @try;
+
+	if ($os == GZIP_OS_UNIX) {
+		# for 98% of the cases the simple heuristic above works
+		# and it was produced by gnu gzip.
+		push @try, ['--gnu', @args];
+		push @try, ['--gnu', @args, '--rsyncable'];
+	}
+
+	if ($name =~ /\//) {
+		push @args, "--original-name", $name;
+		@extraargs = ("-T", $timestamp);
+		$name = basename($name);
+	}
+
+	# set the Operating System flag to the one found in the original
+	# archive
+	push @args, ("--osflag", $os) if $os != GZIP_OS_UNIX;
+
+	# many of the .gz out there are created using the BSD version of
+	# gzip which is using the zlib library; try with our version of
+	# bsd-gzip with added support for the undocumented GNU gzip options
+	# -m and -M
+	push @try, [@args];
+
+	# apparently, there is an old version of bsd-gzip (or a similar tool
+	# based on zlib) that creates gz using maximum compression (-9) but
+	# does not indicate so in the headers. surprisingly, there are many
+	# .gz out there.
+	push @try, [@args, '--quirk', 'buggy-bsd'];
+
+	# Windows' NTFS gzip implementation; quirk is really really evil
+	# it should be the last test: it can result in a corrupted archive!
+	if ($os == GZIP_OS_NTFS) {
+		pop @args; pop @args; # ntfs quirk implies NTFS osflag
+		push @try, [@args, '--quirk', 'ntfs'];
+	}
+
+	my ($bestvariant, $bestsize);
+
+	foreach my $variant (@try) {
+		doit_redir($tempin, $tempout, 'zgz', @$variant, @extraargs, '-c');
+
+		if (defined $orighash) {
+			if (!comparehash($orighash, $tempout)) {
+				return $name, $timestamp, undef, @$variant;
+			} else {
+				print STDERR "XXX DIDN'T WORK\n";
+				next;
+			}
+		}
+
+		if (!comparefiles($orig, $tempout)) {
+			# success
+			return $name, $timestamp, undef, @$variant;
+		}
+		else {
+			# generate a binary delta and see if this is the
+			# best variant so far
+			my $ret=system("xdelta delta -0 --pristine $tempout $orig $tempdir/tmpdelta 2>/dev/null") >> 8;
+			# xdelta exits 1 on success
+			if ($ret == 1) {
+				my $size=(stat("$tempdir/tmpdelta"))[7];
+				if (! defined $bestsize || $size < $bestsize) {
+					$bestvariant = $variant;
+					$bestsize=$size;
+					rename("$tempdir/tmpdelta", "$tempdir/bestdelta") || die "rename: $!";
+				}
+			}
+		}
+	}
+
+	if (defined $orighash) {
+		return;
+	}
+
+	# Nothing worked perfectly, so use the delta that was generated for
+	# the best variant
+	my $percentover=100 - int (($origsize-$bestsize)/$origsize*100);
+	debug("Using delta to best variant, bloating $percentover%: @$bestvariant");
+	if ($percentover > 10) {
+		print STDERR "warning: pristine-gz cannot reproduce build of $orig; ";
+		if ($percentover >= 100) {
+			print STDERR "storing entire file in delta!\n";
+		}
+		else {
+			print STDERR "storing $percentover% size diff in delta\n";
+		}
+		print STDERR "(Please consider filing a bug report so the delta size can be improved.)\n";
+	}
+	return $name, $timestamp, "$tempdir/bestdelta", @$bestvariant;
+}
+
+sub gengz {
+	my $delta=shift;
+	my $file=shift;
+
+	my $tempdir=tempdir();
+
+	if ($delta eq "-") {
+		$delta="$tempdir/in";
+		open (OUT, ">", $delta) || die "$delta: $!";
+		while (<STDIN>) {
+			print OUT $_;
+		}
+		close OUT;
+	}
+	
+	doit("tar", "xf", File::Spec->rel2abs($delta), "-C", $tempdir);
+	if (! -e "$tempdir/type") {
+		die "failed to gengz delta $delta\n";
+	}
+
+	open (IN, "$tempdir/version") || die "delta lacks version number ($!)";
+	my $version=<IN>;
+	if ($version >= 4) {
+		die "delta is version $version, not supported\n";
+	}
+	close IN;
+	if (open (IN, "$tempdir/type")) {
+		my $type=<IN>;
+		chomp $type;
+		if ($type ne "gz") {
+			die "delta is for a $type, not a gz\n";
+		}
+		close IN;
+	}
+
+	
+	open (IN, "$tempdir/params") || die "delta lacks params file ($!)";
+	my $params=<IN>;
+	chomp $params;
+	my @params=split(' ', $params);
+	while (@params) {
+		$_=shift @params;
+		next if /^(--gnu|--rsyncable|-[nmM1-9])$/;
+		if (/^(--original-name|--quirk|--osflag)$/) {
+			shift @params;
+			next;
+		}
+		die "paranoia check failed on params file from delta ($params)";
+	}
+	@params=split(' ', $params);
+	close IN;
+	open (IN, "$tempdir/filename") || die "delta lacks filename file ($!)";
+	my $filename=<IN>;
+	chomp $filename;
+	$filename=~s/^.*\///; # basename isn't strong enough
+	close IN;
+	open (IN, "$tempdir/timestamp") || die "delta lacks timestamp file ($!)";
+	my $timestamp=<IN>;
+	chomp $timestamp;
+	close IN;
+
+	my @zgz=("zgz", @params, "-T", $timestamp);
+	if (! grep { $_ eq "--original-name" } @params) {
+		push @zgz, "-F", "$filename";
+	}
+	push @zgz, "-c";
+
+	if (-e "$tempdir/delta") {
+		my $tfile="$tempdir/".basename($file).".gz";
+		doit_redir($file, $tfile, @zgz);
+		doit("xdelta", "patch", "--pristine", "$tempdir/delta", $tfile, "$file.gz");
+	}
+	else {
+		doit_redir("$file", "$file.gz", @zgz);
+	}
+}
+
+sub gendelta2 {
+	my $file=shift;
+	my $gzfile=shift;
+	my $gzhash=shift;
+	my $gzsize=shift;
+	my $delta=shift;
+
+	my $tempdir=tempdir();
+	my ($filename, $timestamp, $xdelta, @params)=
+		reproducegz($gzfile, $tempdir, "$file", $gzhash, $gzsize);
+	if (defined $filename) {
+		gendelta_common($delta, $tempdir, $filename, 
+				$timestamp, $xdelta, @params);
+	} else {
+		print STDERR "error: couldn't reproduce gz\n";
+	}
+}
+
+sub gendelta {
+	my $gzfile=shift;
+	my $delta=shift;
+
+	my $tempdir=tempdir();
+        my $temporig = "$tempdir/test";
+	doit_redir($gzfile, $temporig, "gzip", "-dc");
+	my ($filename, $timestamp, $xdelta, @params)=
+		reproducegz($gzfile, $tempdir, $temporig);
+
+	gendelta_common($delta, $tempdir, $filename, $timestamp, $xdelta, @params);
+}
+
+sub gendelta_common {
+        my $delta=shift;
+        my $tempdir=shift;
+        my $filename=shift;
+        my $timestamp=shift;
+	my $xdelta=shift;
+	my @params=@_;
+
+	my $stdout=0;
+	
+	if ($delta eq "-") {
+		$stdout=1;
+		$delta="$tempdir/out";
+	}
+
+	my @files=qw(version type params filename timestamp);
+
+	open(OUT, ">", "$tempdir/version") || die "$!";
+	print OUT (defined $xdelta ? "3.0" : "2.0")."\n";
+	close OUT;
+	open(OUT, ">", "$tempdir/type") || die "$!";
+	print OUT "gz\n";
+	close OUT;
+	open(OUT, ">", "$tempdir/params") || die "$!";
+	print OUT "@params\n";
+	close OUT;
+	open(OUT, ">", "$tempdir/filename") || die "$!";
+	print OUT basename($filename)."\n";
+	close OUT;
+	open(OUT, ">", "$tempdir/timestamp") || die "$!";
+	print OUT "$timestamp\n";
+	close OUT;
+	if (defined $xdelta) {
+		rename($xdelta, "$tempdir/delta") || die "rename: $!";
+		push @files, "delta";
+	}
+
+	doit("tar", "czf", $delta, "-C", $tempdir, @files);
+
+	if ($stdout) {
+		doit("cat", $delta);
+	}
+}
+
+Getopt::Long::Configure("bundling");
+if (! GetOptions(
+	"v|verbose!" => \$verbose,
+	"d|debug!" => \$debug,
+	"k|keep!" => \$keep,
+   )) {
+	usage();
+	exit 1;
+}
+
+my $command=shift;
+if ($command eq 'gengz' && @ARGV == 2) {
+	gengz(@ARGV);
+}
+elsif ($command eq 'gendelta' && @ARGV == 2) {
+	gendelta(@ARGV);
+}
+elsif ($command eq 'gendelta2' && @ARGV == 5) {
+	gendelta2(@ARGV);
+}
+else {
+	usage();
+	exit 1;
+}

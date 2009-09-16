@@ -1,0 +1,42 @@
+What does dak do?
+
+  - parses incoming
+  - authenticates uploads
+  - removes old debs
+
+  - maintains a db
+  - creates Release/Sources/Packages/Contents/Diff files
+
+  - allows manual viewing/manipulation of suites
+
+  - closes bugs
+
+So how to write drak?
+
+  - (1) manage the pool
+  - (2) dump indices
+  - (3) allow additions via (a) other Packages, (b) incoming
+  - (4) provide an API to manipulate the pool
+
+Expanding it to support git sources, debug info, rpms, windows stuff
+and live cds would be l33t.
+
+What's the database managing?
+
+  - index information
+  - collections
+  - ownership
+
+========================================
+real things to do.
+========================================
+
+mirror a suite
+coaelsce suites -- so ubuntu and debian sources are only stored once
+handle uploads / creating suites
+handle managing suites (deletions, britney, etc)
+
+
+
+
+
