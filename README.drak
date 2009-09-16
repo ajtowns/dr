@@ -32,11 +32,51 @@ real things to do.
 ========================================
 
 mirror a suite
-coaelsce suites -- so ubuntu and debian sources are only stored once
+coalesce suites -- so ubuntu and debian sources are only stored once
 handle uploads / creating suites
 handle managing suites (deletions, britney, etc)
 
+========================================
+mirror a suite...
+========================================
 
+ 1. pull updates to index files
+     -- diffs/p7z/bz2/gz/direct
+ 2. recreate implied files
+     -- other compressed stuff
+     -- debs
+     -- d-i
+ 3. make new indexes/files available
 
+========================================
+what's a suite look like?
+========================================
+
+ dists/$alias -> $suite
+ dists/$suite:
+    Release
+    Release.gpg
+    Contents-$arch [.gz, .bz2, .diff]
+    $component/
+	source/
+		Release
+		Sources [.gz, .bz2, .diff]
+        binary-$arch/
+		Release
+		Packages [.gz, .bz2, .diff]
+        debian-installer/
+		binary-$arch/
+			Release
+			Packages [.gz, .bz2]
+	i18n/
+		Index
+		Translations-ll_LL [.bz2]
+
+Also:
+
+ dists/$suite/$components/installer-$arch/
+	current -> $date
+	$date/
+		images/ ...
 
 
