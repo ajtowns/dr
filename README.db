@@ -1,0 +1,28 @@
+
+I obviously want to use a database.
+I'd love to learn how to use a mapreduce db (hadoop, couchdb), but
+  the drawback is that google app engine doesn't support mapreduce...
+
+couchdb has:
+   - document database (not relational -- no join operator)
+   - distributed
+   - map/reduce
+   - cached queries (map/reduce via views)
+   - ACID, MVCC
+   - code distributed as javascript
+
+google app engine datastore
+   - hard to build summaries after the fact (hard to maintain them too...)
+
+Three levels would be ideal:
+   - laptop         ("sqlite")
+   - free cloud     (google app engine)
+   - self managed   (couchdb)
+
+############################################################################
+
+
+
+
+
+
