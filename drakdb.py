@@ -19,9 +19,9 @@ class File(Document):
 
 class Collection(Document):
     owner = String()           # debian.org
-    group = String()           # main / security / backports
-    suite = String()           # sid / squeeze / ...
-    component = String()       # main / contrib / non-free
+    group = String()           # shared pool (main / security / backports)
+    suite = String()           # suite (sid / squeeze / ...)
+    component = String()       # component (main / contrib / non-free)
 
     types = Array(String())    # .dsc, .deb, ...
 
