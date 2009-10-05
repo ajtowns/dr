@@ -21,6 +21,12 @@ Three levels would be ideal:
 
 ############################################################################
 
+Really free cloud's unlikely to work for this -- I need some way to store
+debs which can be "large" -- even if 100-400MB is ruled out, 10MB shouldn't
+be and 1.01MB is on google apps.
+
+The next best idea would be using a DHT to store the files. How would that
+work? It wouldn't. debtorrent, maybe, or a variant? Augh.
 
 
 

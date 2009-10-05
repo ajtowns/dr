@@ -1,9 +1,16 @@
 {
     "_id": "_design/example",
+    "_rev": "5-979003189",
     "views": {
+        "debinfo": {
+            "map": "function(doc) {if (doc._id.indexOf(\"file:deb:\") == 0) {emit([doc.package, doc.version, doc.architecture], null); } }",
+        },
+        "suite_changes": {
+            "map": "function(doc) {if (doc._id.indexOf(\"chset:\") == 0) {if (doc.chsetrev) {emit([doc.suite, doc.chsetrev, doc.timestamp], doc._id);} else {emit([doc.suite, null, doc.timestamp], doc._id);}}}",
+	},
         "foo": {
             "map": "function(doc) {if (doc._id.indexOf(\"collchange:\") == 0) {emit([doc.suite, doc.file], [doc.revision, doc.present]); } }",
-            "reduce": "function(key, values, rereduce) {rev = values[0][0]; present = values[0][1]; for (i = 1; i < values.length; i++) { if (values[i][0] > rev) { present = values[i][1]; } } return [rev, present]; }"
+            "reduce": "function(key, values, rereduce) {rev = values[0][0]; present = values[0][1]; if (values.length == 1) { log(\"pointless reduction?\"); } for (i = 1; i < values.length; i++) { if (values[i][0] > rev) { present = values[i][1]; } } return [rev, present]; }"
         }
     }
 }

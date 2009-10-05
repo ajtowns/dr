@@ -1,0 +1,46 @@
+
+do debrepo as a transactional db with views in couchdb
+that gives you a good introduction to using couchdb for fossfair/market systems
+
+mirroring is then possible, so that you can have a local (disconnected)
+database of your changes
+
+even better, you could do remote pushes -- ie, true remote dak.
+yeah
+that's a fun idea.
+
+doctypes:
+   file:deb:package_version_arch:random
+       (control data, contents)
+   suite:identity
+       (Release info, etc; metadata map; "pool/" magic of some sort)
+   collchange:uuidblah
+       suite    = suite:identity
+       file     = file:deb:package_version_arch:random
+       revision = revision nr
+       present  = yes/no
+       override = ...
+
+views:
+  #1: latest contents of a suite
+       [suite, file] -> [rev, present]
+
+       map = function(doc) {
+           if (doc.Type == "collchange") {
+               emit([doc.suite, doc.file], [doc.revision, doc.present])
+           }
+       }
+       reduce = function(key, values, rereduce) {
+           rev = values[0][0]
+           present = values[0][1]
+           for (i = 1; i < values.length; i++) {
+               if (values[i][0] > rev) {
+                   present = values[i][1];
+               }
+           }
+           return [rev, present];
+       }
+       query range: [suite] -> [suite, ZZZZ]
+
+
+
