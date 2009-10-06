@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import couchdb, uuid, time
+import couchdb, uuid, time, sys
 
 def readstanzas(file):
     lineno = 0
@@ -55,6 +55,20 @@ def suite_files(db, suite):
 
     return files
 
+def generate_Packages(db, suite, out=sys.stdout):
+    all_files = list(suite_files(db, suite))
+    all_files.sort()
+    while all_files != []:
+        files = all_files[:50]
+	all_files = all_files[50:]
+
+        v = db.view("_all_docs", keys=files, include_docs=True)
+        for r in v:
+            c = r.doc["CONTROL"]
+	    for k,v in zip(c[::2], c[1::2]):
+	        out.write(("%s:%s\n" % (k,v)).encode('utf-8'))
+            out.write("\n")
+
 def update_suite_from_Packages(db, suite, packages):
     count = 0
 
@@ -64,7 +78,7 @@ def update_suite_from_Packages(db, suite, packages):
 
     for s in readstanzas(packages):
         count += 1
-        if count > 1300:
+        if False and count > 1300:
             print "count at %d, stopping" % (count)
             break
 
@@ -105,8 +119,16 @@ def update_suite_from_Packages(db, suite, packages):
         db[chsetid] = chset
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+	print "Usage: %s [load|dump]" % (sys.argv[0])
+	sys.exit(1)
+
     db = open_couchdb()
-    pkgs = open("/var/lib/dpkg/available")
-    update_suite_from_Packages(db, "available-test", pkgs)
-    print "done!"
+
+    if sys.argv[1] == "load":
+        pkgs = open("/var/lib/dpkg/available")
+        update_suite_from_Packages(db, "available-test", pkgs)
+        print "done!"
+    elif sys.argv[1] == "dump":
+        generate_Packages(db, "available-test")
 
