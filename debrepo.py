@@ -45,6 +45,11 @@ def find_matching_deb_ids(db, deb):
 def suite_files(db, suite):
     chsets = db.view("example/suite_changes", include_docs=True)
 
+    if "suite:%s" % suite not in db:
+        db["suite:%s" % suite] = {
+            "name": suite,
+            "files": []
+        }
     files = set(db["suite:%s" % suite]["files"])
 
     for r in chsets[ [suite,None] : [suite,0] ]:
@@ -86,7 +91,11 @@ def update_suite_from_Packages(db, suite, packages):
         fileid = find_matching_deb_ids(db, d)
 
         if fileid is None:
-            fileid = "file:deb:%s_%s_%s:%s" % (d["package"], d["version"], d["architecture"], "0")
+            i = 0
+            while True:
+                fileid = "file:deb:%s_%s_%s:%s" % (d["package"], d["version"], d["architecture"], str(i))
+                if fileid not in db: break
+                i += 1
             print "adding %s to db" % (fileid)
             db[fileid] = d
         else:
@@ -118,17 +127,52 @@ def update_suite_from_Packages(db, suite, packages):
     else:    
         db[chsetid] = chset
 
+def find_package(db, pkgname, ignore_changes=False):
+    debinfo = db.view("example/debinfo", include_docs=True)
+    skey = [pkgname]
+    ekey = [pkgname, {}]
+    matches = []
+    for r in debinfo[ skey:ekey ]:
+        matches.append( (r.doc["version"], r.doc["architecture"], 
+				r.doc["_id"]) )
+
+    if ignore_changes:
+        suiinfo = db.view("_all_docs", include_docs=True)
+    else:
+        suiinfo = db.view("_all_docs")
+       
+    for r in suiinfo[ "suite:":"suiteX" ]:
+        suitename = r.key[6:]
+        if ignore_changes:
+            files = r.doc["files"]
+        else:
+            files = suite_files(db, suitename)
+
+        for m in matches:
+            if m[2] in files:
+                print "%s | %s | %s | %s" % (pkgname, m[0], suitename, m[1])
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
 	print "Usage: %s [load|dump]" % (sys.argv[0])
 	sys.exit(1)
 
     db = open_couchdb()
 
     if sys.argv[1] == "load":
-        pkgs = open("/var/lib/dpkg/available")
-        update_suite_from_Packages(db, "available-test", pkgs)
+	suitename, packages = "available-test", "/var/lib/dpkg/available"
+        if len(sys.argv) >= 3:
+            suitename = sys.argv[2]
+        if len(sys.argv) >= 4:
+            packages = sys.argv[3]
+        update_suite_from_Packages(db, suitename, open(packages))
         print "done!"
     elif sys.argv[1] == "dump":
-        generate_Packages(db, "available-test")
+	suitename = "available-test"
+        if len(sys.argv) >= 3:
+            suitename = sys.argv[2]
+        generate_Packages(db, suitename)
+    elif sys.argv[1] == "ls":
+        pkg = sys.argv[2]
+        find_package(db, pkg)
 
